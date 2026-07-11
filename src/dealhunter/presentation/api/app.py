@@ -23,7 +23,7 @@ from dealhunter.core.exceptions import (
 )
 from dealhunter.core.logging import configure_logging, get_logger
 from dealhunter.infrastructure.db.session import get_engine
-from dealhunter.presentation.api.v1.routers import health
+from dealhunter.presentation.api.v1.routers import health, search, users
 
 logger = get_logger(__name__)
 
@@ -57,6 +57,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router, prefix="/api/v1")
+    app.include_router(users.router, prefix="/api/v1")
+    app.include_router(search.router, prefix="/api/v1")
 
     @app.exception_handler(DealHunterError)
     async def handle_domain_error(request: Request, exc: DealHunterError) -> JSONResponse:

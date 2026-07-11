@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
@@ -75,17 +76,33 @@ def _to_entity(model: SearchProfileModel) -> SearchProfile:
 
 
 class SQLAlchemySearchProfileRepository(SearchProfileRepository):
-    """Реализация репозитория поисковых профилей поверх PostgreSQL."""
+    """Реализация репозитория поисковых профилей поверх PostgreSQL.
+
+    Использует soft-delete (`deleted_at`), а не физическое удаление —
+    приводит поведение в соответствие с наличием этого поля в
+    `SearchProfileModel` (Статья VIII Конституции: пользователь управляет
+    хранением истории, но данные не обязаны исчезать мгновенно и
+    безвозвратно). Ранее `delete()` делал физический `DELETE`, хотя модель
+    уже содержала `deleted_at` — несоответствие исправлено здесь.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def get_by_id(self, profile_id: UUID) -> SearchProfile | None:
-        model = await self._session.get(SearchProfileModel, profile_id)
+        stmt = select(SearchProfileModel).where(
+            SearchProfileModel.id == profile_id,
+            SearchProfileModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
         return _to_entity(model) if model else None
 
     async def list_by_user(self, user_id: UUID) -> list[SearchProfile]:
-        stmt = select(SearchProfileModel).where(SearchProfileModel.user_id == user_id)
+        stmt = select(SearchProfileModel).where(
+            SearchProfileModel.user_id == user_id,
+            SearchProfileModel.deleted_at.is_(None),
+        )
         result = await self._session.execute(stmt)
         return [_to_entity(model) for model in result.scalars().all()]
 
@@ -104,7 +121,7 @@ class SQLAlchemySearchProfileRepository(SearchProfileRepository):
         return _to_entity(model)
 
     async def update(self, profile: SearchProfile) -> SearchProfile:
-        model = await self._session.get(SearchProfileModel, profile.id)
+        model = await self._get_active_model(profile.id)
         if model is None:
             raise ValueError(f"Поисковый профиль {profile.id} не найден при обновлении")
 
@@ -118,7 +135,21 @@ class SQLAlchemySearchProfileRepository(SearchProfileRepository):
         return _to_entity(model)
 
     async def delete(self, profile_id: UUID) -> None:
-        model = await self._session.get(SearchProfileModel, profile_id)
+        """Мягко удаляет профиль — проставляет `deleted_at`.
+
+        Физическая запись остаётся в БД (для истории/аудита и на случай
+        восстановления), но перестаёт быть видимой через `get_by_id` /
+        `list_by_user`.
+        """
+        model = await self._get_active_model(profile_id)
         if model is not None:
-            await self._session.delete(model)
+            model.deleted_at = datetime.now(UTC)
             await self._session.commit()
+
+    async def _get_active_model(self, profile_id: UUID) -> SearchProfileModel | None:
+        stmt = select(SearchProfileModel).where(
+            SearchProfileModel.id == profile_id,
+            SearchProfileModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()

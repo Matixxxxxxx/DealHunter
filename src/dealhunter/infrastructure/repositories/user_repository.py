@@ -30,17 +30,33 @@ def _to_entity(model: UserModel) -> User:
 
 
 class SQLAlchemyUserRepository(UserRepository):
-    """Реализация репозитория пользователей поверх PostgreSQL."""
+    """Реализация репозитория пользователей поверх PostgreSQL.
+
+    `get_by_id`/`get_by_telegram_id` исключают мягко удалённых
+    пользователей (`deleted_at IS NOT NULL`) — согласовано с тем же
+    поведением в `SQLAlchemySearchProfileRepository`. У интерфейса
+    `UserRepository` пока нет метода удаления — колонка `deleted_at`
+    зарезервирована на будущее (например, для GDPR-подобного удаления по
+    Статье VIII), но уже сейчас читающие методы её уважают.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def get_by_id(self, user_id: UUID) -> User | None:
-        model = await self._session.get(UserModel, user_id)
+        stmt = select(UserModel).where(
+            UserModel.id == user_id,
+            UserModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
         return _to_entity(model) if model else None
 
     async def get_by_telegram_id(self, telegram_id: int) -> User | None:
-        stmt = select(UserModel).where(UserModel.telegram_id == telegram_id)
+        stmt = select(UserModel).where(
+            UserModel.telegram_id == telegram_id,
+            UserModel.deleted_at.is_(None),
+        )
         result = await self._session.execute(stmt)
         model = result.scalar_one_or_none()
         return _to_entity(model) if model else None

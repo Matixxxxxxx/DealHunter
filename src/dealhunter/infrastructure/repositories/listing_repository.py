@@ -30,20 +30,33 @@ def _to_entity(model: ListingModel) -> Listing:
 
 
 class SQLAlchemyListingRepository(ListingRepository):
-    """Реализация репозитория объявлений поверх PostgreSQL."""
+    """Реализация репозитория объявлений поверх PostgreSQL.
+
+    Как и в `SQLAlchemyUserRepository`, читающие методы исключают мягко
+    удалённые записи — согласовано по всем трём репозиториям проекта.
+    Интерфейс `ListingRepository` пока не содержит метода удаления, но
+    колонка `deleted_at` уже зарезервирована в модели.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def get_by_id(self, listing_id: UUID) -> Listing | None:
-        model = await self._session.get(ListingModel, listing_id)
+        stmt = select(ListingModel).where(
+            ListingModel.id == listing_id,
+            ListingModel.deleted_at.is_(None),
+        )
+        result = await self._session.execute(stmt)
+        model = result.scalar_one_or_none()
         return _to_entity(model) if model else None
 
     async def get_by_source_and_external_id(
         self, source: str, external_id: str
     ) -> Listing | None:
         stmt = select(ListingModel).where(
-            ListingModel.source == source, ListingModel.external_id == external_id
+            ListingModel.source == source,
+            ListingModel.external_id == external_id,
+            ListingModel.deleted_at.is_(None),
         )
         result = await self._session.execute(stmt)
         model = result.scalar_one_or_none()
@@ -85,7 +98,10 @@ class SQLAlchemyListingRepository(ListingRepository):
     async def list_by_source(self, source: str, limit: int = 100) -> list[Listing]:
         stmt = (
             select(ListingModel)
-            .where(ListingModel.source == source)
+            .where(
+                ListingModel.source == source,
+                ListingModel.deleted_at.is_(None),
+            )
             .order_by(ListingModel.created_at.desc())
             .limit(limit)
         )
